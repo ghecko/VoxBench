@@ -11,6 +11,10 @@ class BenchmarkTracker:
     Tracks times (load, VAD, transcription) and RTF.
     """
     def __init__(self, model_spec: str, vad_mode: str, device: str):
+        # Reset peak memory stats at the start of each model benchmark
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
         self.metrics = {
             "timestamp": datetime.now().isoformat(),
             "model": model_spec,
@@ -46,10 +50,9 @@ class BenchmarkTracker:
         if self.metrics["total_time_s"] > 0:
             self.metrics["rtf"] = round(self.metrics["audio_duration_s"] / self.metrics["total_time_s"], 2)
         
-        # Track Peak VRAM if on NVIDIA
+        # Track Peak VRAM (Reserved memory is more representative of nvidia-smi)
         if torch.cuda.is_available():
-            # max_memory_allocated returns bytes
-            self.metrics["peak_vram_gb"] = round(torch.cuda.max_memory_allocated() / (1024**3), 2)
+            self.metrics["peak_vram_gb"] = round(torch.cuda.max_memory_reserved() / (1024**3), 2)
 
     def save(self, output_path: str = "outputs/benchmarks.json"):
         """Append the benchmarks to a central JSON file."""
