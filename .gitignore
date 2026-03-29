@@ -1,0 +1,18 @@
+# Outputs
+outputs/
+
+# Downloaded models
+models/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Log files
+*.log
+run_output*.txt
+
+# IDE
+.vscode/
+.idea/

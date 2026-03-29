@@ -1,0 +1,41 @@
+# Dockerfile for Multi-Transcribe on NVIDIA Spark (Blackwell / GB10)
+FROM nvcr.io/nvidia/pytorch:26.03-py3
+
+# Install uv for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── Setup Virtual Environment (Fix PEP 668) ──────────────────────
+ENV VIRTUAL_ENV=/opt/venv
+RUN uv venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Install all Python dependencies using uv
+COPY requirements.txt ./
+RUN uv pip install --no-cache-dir -r requirements.txt \
+    && uv pip install 'nemo_toolkit[asr]' \
+    && uv pip install --force-reinstall 'transformers>=4.49.0'
+
+# Copy project files (context is filtered by .dockerignore)
+COPY . .
+
+# ── Environment variables ────────────────────────────────────────
+ENV HF_HOME=/app/models
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Pre-download default models (Voxtral Realtime)
+ARG PREDOWNLOAD_MODEL=0
+RUN if [ "$PREDOWNLOAD_MODEL" = "1" ]; then \
+        python scripts/download_model.py; \
+    fi
+
+ENTRYPOINT ["python", "main.py"]

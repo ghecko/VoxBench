@@ -1,0 +1,61 @@
+services:
+  # Updated Spark service (The "Super-Dockerfile" for Blackwell/GB10)
+  multi-transcribe-spark:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+      args:
+        MODEL_ID: ${MODEL_ID:-mistralai/Voxtral-Mini-4B-Realtime-2602}
+        PREDOWNLOAD_MODEL: ${PREDOWNLOAD_MODEL:-1}
+    image: multi-transcribe:spark
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - .:/app
+      - ./outputs:/outputs
+      - ./audio:/data
+      - multi_hf_cache:/app/models
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - MODEL_ID=${MODEL_ID:-mistralai/Voxtral-Mini-4B-Realtime-2602}
+    command: --help
+
+  # Legacy/Other platform fallbacks (kept for compatibility)
+  multi-transcribe-rocm:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocm
+    image: multi-transcribe:rocm
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    privileged: true
+    volumes:
+      - .:/app
+      - ./outputs:/outputs
+      - ./audio:/data
+      - multi_hf_cache:/app/models
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    command: --help --device rocm
+
+  multi-transcribe-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: multi-transcribe:cpu
+    volumes:
+      - .:/app
+      - ./outputs:/outputs
+      - ./audio:/data
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    command: --help --device cpu
+
+volumes:
+  multi_hf_cache:

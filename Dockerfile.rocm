@@ -1,0 +1,39 @@
+# Dockerfile for VoxtralX on AMD ROCm 7.2
+FROM rocm/pytorch:rocm7.2_ubuntu24.04_py3.13_pytorch_release_2.10.0
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies (ROCm-specific requirements)
+COPY requirements.txt requirements-rocm.txt ./
+RUN pip install --no-cache-dir -r requirements-rocm.txt
+
+# Copy project files
+COPY . .
+
+# ── Environment variables ────────────────────────────────────────
+# Model to use — override at build time or run time:
+#   docker build --build-arg MODEL_ID=your-org/custom-model ...
+#   docker run -e MODEL_ID=your-org/custom-model ...
+ARG MODEL_ID=mistralai/Voxtral-Mini-4B-Realtime-2602
+ENV MODEL_ID=${MODEL_ID}
+ENV HF_HOME=/app/models
+ENV PYTHONPATH=/app
+ENV TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+
+# ── Pre-download model at build time ────────────────────────────
+# This bakes the model weights into the image so startup is instant.
+# Skip with: docker build --build-arg PREDOWNLOAD_MODEL=0 ...
+ARG PREDOWNLOAD_MODEL=1
+RUN if [ "$PREDOWNLOAD_MODEL" = "1" ]; then \
+        python scripts/download_model.py; \
+    fi
+
+ENTRYPOINT ["python", "main.py"]

@@ -1,0 +1,28 @@
+# Dockerfile for VoxtralX on CPU
+FROM ubuntu:22.04
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-dev \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies (CPU version of torch)
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && pip3 install --no-cache-dir -r requirements.txt
+
+# Copy project files
+COPY . .
+
+# Set environment variables
+ENV HF_HOME=/app/models
+ENV PYTHONPATH=/app
+
+ENTRYPOINT ["python3", "main.py"]

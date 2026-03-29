@@ -1,0 +1,6 @@
+# ── ROCm specific dependencies ───────────────────────────────────
+# Inherits everything from requirements.txt
+-r requirements.txt
+
+# bitsandbytes — q4/q8 quantization on ROCm
+bitsandbytes

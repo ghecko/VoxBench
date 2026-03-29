@@ -1,0 +1,86 @@
+# ─── Multi-Transcribe Model Registry ────────────────────────────
+# Add, remove, or modify models here.
+# Use --model all to benchmark every model listed below.
+# Use --model <key> to run a specific one (e.g. --model whisper:small).
+#
+# Fields:
+#   module:  Python module path containing the transcriber class
+#   class:   Class name inside that module
+#   args:    Default keyword arguments passed to the class constructor
+#   enabled: Set to false to skip this model in --model all runs
+
+# ── Voxtral (Mistral) ──────────────────────────────────────────
+voxtral:mini-4b:
+  module: core.transcribe
+  class: VoxtralTranscriber
+  args:
+    model_id: mistralai/Voxtral-Mini-4B-Realtime-2602
+  enabled: true
+
+voxtral:small-24b:
+  module: core.transcribe
+  class: VoxtralTranscriber
+  args:
+    model_id: mistralai/Voxtral-Small-24B-2507
+  enabled: false  # Large model, enable when needed
+
+# ── Whisper (OpenAI via Transformers) ──────────────────────────
+whisper:large-v3:
+  module: core.transcribe_whisper
+  class: WhisperTranscriber
+  args:
+    model_size: large-v3
+  enabled: true
+
+whisper:turbo:
+  module: core.transcribe_whisper
+  class: WhisperTranscriber
+  args:
+    model_size: turbo
+  enabled: true
+
+whisper:medium:
+  module: core.transcribe_whisper
+  class: WhisperTranscriber
+  args:
+    model_size: medium
+  enabled: false
+
+whisper:small:
+  module: core.transcribe_whisper
+  class: WhisperTranscriber
+  args:
+    model_size: small
+  enabled: true
+
+# ── Moonshine (UsefulSensors) ──────────────────────────────────
+# Note: Moonshine is English-only.
+moonshine:base:
+  module: core.transcribe_moonshine
+  class: MoonshineTranscriber
+  args:
+    model_name: UsefulSensors/moonshine-base
+  enabled: true
+
+moonshine:tiny:
+  module: core.transcribe_moonshine
+  class: MoonshineTranscriber
+  args:
+    model_name: UsefulSensors/moonshine-tiny-ar
+  enabled: false
+
+# ── Canary (NVIDIA NeMo) ──────────────────────────────────────
+canary:1b:
+  module: core.transcribe_canary
+  class: CanaryTranscriber
+  args:
+    model_name: nvidia/canary-1b
+  enabled: true
+
+# ── Add your own models below ─────────────────────────────────
+# example:custom-model:
+#   module: core.transcribe_whisper
+#   class: WhisperTranscriber
+#   args:
+#     model_size: large-v3
+#   enabled: true

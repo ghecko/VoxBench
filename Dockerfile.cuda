@@ -1,0 +1,32 @@
+# Dockerfile for VoxtralX on NVIDIA CUDA (pre-Blackwell GPUs)
+FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-runtime
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies (CUDA-specific requirements)
+COPY requirements.txt requirements-cuda.txt ./
+RUN pip install --no-cache-dir -r requirements-cuda.txt
+
+# Copy project files
+COPY . .
+
+# ── Environment variables ────────────────────────────────────────
+ARG MODEL_ID=mistralai/Voxtral-Mini-4B-Realtime-2602
+ENV MODEL_ID=${MODEL_ID}
+ENV HF_HOME=/app/models
+ENV PYTHONPATH=/app
+
+# ── Pre-download model at build time ────────────────────────────
+ARG PREDOWNLOAD_MODEL=1
+RUN if [ "$PREDOWNLOAD_MODEL" = "1" ]; then \
+        python scripts/download_model.py; \
+    fi
+
+ENTRYPOINT ["python", "main.py"]

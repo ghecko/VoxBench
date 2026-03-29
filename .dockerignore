@@ -1,0 +1,11 @@
+.git
+.venv
+audio/
+outputs/
+.cache/
+
+# Ignore log/record files but keep requirements
+*.md
+!README.md
+!requirements.txt
+!requirements-*.txt
