@@ -120,7 +120,7 @@ def run_transcription(audio, audio_duration, model_spec, vad_mode, segments, arg
         torch.cuda.empty_cache()
 
 def main():
-    parser = argparse.ArgumentParser(description="multi-transcribe: Multi-Model Transcription Explorer")
+    parser = argparse.ArgumentParser(description="VoxHub: Multi-Model Transcription Platform")
     parser.add_argument("input", help="Path to input audio file")
     parser.add_argument("--output-dir", default="outputs", help="Directory to save outputs")
     
@@ -134,13 +134,27 @@ def main():
     
     # VAD & Diarization
     parser.add_argument(
-        "--vad", 
-        choices=["silero", "pyannote", "none"], 
-        default="silero", 
-        help="VAD strategy (default: silero for speed, pyannote for HQ/Diarization)"
+        "--vad",
+        choices=["silero", "pyannote", "hybrid", "none"],
+        default="silero",
+        help=(
+            "VAD strategy: silero (fast), pyannote (HQ/diarization), "
+            "hybrid (Silero gate + Pyannote refiner, best recall+precision), "
+            "none (no segmentation)"
+        )
     )
-    parser.add_argument("--diarize", action="store_true", help="Enable speaker diarization (only with --vad pyannote)")
+    parser.add_argument("--diarize", action="store_true", help="Enable speaker diarization (with --vad pyannote or hybrid)")
     parser.add_argument("--no-cache", action="store_true", help="Disable VAD segment caching")
+
+    # Hybrid VAD tuning
+    parser.add_argument(
+        "--silero-threshold", type=float, default=0.35,
+        help="Silero sensitivity for hybrid mode (lower=more sensitive, default: 0.35)"
+    )
+    parser.add_argument(
+        "--override-threshold", type=float, default=0.8,
+        help="Silero confidence above which segments are kept even if Pyannote disagrees (default: 0.8)"
+    )
     
     # Performance & Device
     parser.add_argument("--device", choices=["auto", "cuda", "rocm", "cpu"], default="auto", help="Hardware device")
@@ -194,7 +208,11 @@ def main():
             console.print("  [green]Using cached VAD segments[/green]")
 
     if not segments:
-        vad_engine = UnifiedVAD(mode=args.vad, hf_token=args.hf_token)
+        vad_engine = UnifiedVAD(
+            mode=args.vad, hf_token=args.hf_token,
+            silero_threshold=args.silero_threshold,
+            override_threshold=args.override_threshold,
+        )
         segments = vad_engine.detect(
             audio, diarize=args.diarize, 
             num_speakers=args.num_speakers, min_speakers=args.min_speakers, max_speakers=args.max_speakers

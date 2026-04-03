@@ -18,7 +18,7 @@ async def list_models():
         models_data.append({
             "id": model_id,
             "object": "model",
-            "owned_by": "voxbench",
+            "owned_by": "voxhub",
             "permission": []
         })
     return JSONResponse(content={"data": models_data})

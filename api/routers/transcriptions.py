@@ -17,7 +17,7 @@ router = APIRouter()
 @router.post(
     "/v1/audio/transcriptions",
     tags=["Transcription"],
-    description="Transcribe audio files using VoxBench backends in an OpenAI-compatible format."
+    description="Transcribe audio files using VoxHub backends in an OpenAI-compatible format."
 )
 async def transcribe_audio(
     request: Request,
@@ -86,7 +86,7 @@ async def translate_audio(
 ):
     """
     OpenAI-compatible translation endpoint. 
-    VoxBench backends mostly focus on transcription, so we route to transcribe.
+    VoxHub backends mostly focus on transcription, so we route to transcribe.
     """
     return await transcribe_audio(
         request=request,

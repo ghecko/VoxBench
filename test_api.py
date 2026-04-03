@@ -17,7 +17,7 @@ def test_transcription(file_path, model="whisper:turbo", api_url="http://localho
         
         # Add API Key if set
         headers = {}
-        api_key = os.getenv("VOXBENCH_API_KEY")
+        api_key = os.getenv("VOXHUB_API_KEY")
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
             

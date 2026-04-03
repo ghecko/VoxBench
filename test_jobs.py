@@ -10,7 +10,7 @@ def test_jobs_api(file_path, model="whisper:turbo", api_url="http://localhost:80
     submit_url = f"{api_url}/v1/audio/transcriptions/jobs"
     
     headers = {}
-    api_key = os.getenv("VOXBENCH_API_KEY")
+    api_key = os.getenv("VOXHUB_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
         

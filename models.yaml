@@ -1,4 +1,4 @@
-# ─── Multi-Transcribe Model Registry ────────────────────────────
+# ─── VoxHub Model Registry ────────────────────────────
 # Add, remove, or modify models here.
 # Use --model all to benchmark every model listed below.
 # Use --model <key> to run a specific one (e.g. --model whisper:small).

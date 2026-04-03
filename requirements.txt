@@ -1,4 +1,4 @@
-# ── Unified dependencies for multi-transcribe ──────────────────
+# ── Unified dependencies for VoxHub ──────────────────
 pyannote.audio
 ffmpeg-python
 pydantic

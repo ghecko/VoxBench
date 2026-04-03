@@ -13,12 +13,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("voxbench-api")
+logger = logging.getLogger("voxhub-api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = get_config()
-    logger.info(f"Starting VoxBench API Server")
+    logger.info(f"Starting VoxHub API Server")
     logger.info(f"Default Model: {config.model}")
     logger.info(f"Default VAD  : {config.vad}")
     logger.info(f"Diarization  : {config.diarize}")
@@ -30,12 +30,12 @@ async def lifespan(app: FastAPI):
         logger.warning("HF_TOKEN not detected. pyannote VAD/Diarization might fail.")
     
     yield
-    logger.info("Shutting down VoxBench API Server")
+    logger.info("Shutting down VoxHub API Server")
 
 def create_app() -> FastAPI:
     config = get_config()
     app = FastAPI(
-        title="VoxBench OpenAI-Compatible API",
+        title="VoxHub OpenAI-Compatible API",
         version="1.0.0",
         lifespan=lifespan
     )

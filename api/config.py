@@ -20,11 +20,12 @@ class Device(str, Enum):
 class VadMode(str, Enum):
     SILERO = "silero"
     PYANNOTE = "pyannote"
+    HYBRID = "hybrid"
     NONE = "none"
 
 class ServerConfig(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="VOXBENCH_",
+        env_prefix="VOXHUB_",
         env_nested_delimiter="__",
         env_file=".env",
         extra="ignore"
@@ -49,7 +50,11 @@ class ServerConfig(BaseSettings):
     
     # Performance
     max_concurrent: int = 1
-    
+
+    # Hybrid VAD tuning (only used when vad=hybrid)
+    silero_threshold: float = Field(default=0.35, description="Silero gate sensitivity for hybrid mode")
+    override_threshold: float = Field(default=0.8, description="Silero confidence to override Pyannote rejection")
+
     # Transcription settings (from main.py)
     precision: str = "auto"
     flash_attn: bool = False

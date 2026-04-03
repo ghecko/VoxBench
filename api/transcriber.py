@@ -23,7 +23,12 @@ class TranscriptionService:
 
     def get_vad(self, mode: str) -> UnifiedVAD:
         if mode not in self._vad_engines:
-            self._vad_engines[mode] = UnifiedVAD(mode=mode, hf_token=self.config.hf_token)
+            self._vad_engines[mode] = UnifiedVAD(
+                mode=mode,
+                hf_token=self.config.hf_token,
+                silero_threshold=self.config.silero_threshold,
+                override_threshold=self.config.override_threshold,
+            )
         return self._vad_engines[mode]
         
     async def get_model(self, model_spec: str):
@@ -69,6 +74,7 @@ class TranscriptionService:
         self._jobs[job_id] = {
             "id": job_id,
             "status": "pending",
+            "stage": None,          # Additive field: "loading", "vad", "transcribing", None when done
             "progress": 0,
             "created_at": time.time(),
             "completed_at": None,
@@ -97,10 +103,14 @@ class TranscriptionService:
         
         async with self._semaphore:
             # 1. Load Audio
+            if job_id:
+                self._update_job(job_id, stage="loading")
             logger.info(f"[{request_id}] Loading audio: {audio_path}")
             audio = await asyncio.to_thread(load_audio, audio_path)
-            
+
             # 2. Run VAD/Diarization
+            if job_id:
+                self._update_job(job_id, stage="vad")
             logger.info(f"[{request_id}] Running VAD ({vad_mode}, diarize={diarize})")
             vad_engine = self.get_vad(vad_mode)
             segments = await asyncio.to_thread(
@@ -108,10 +118,12 @@ class TranscriptionService:
                 audio,
                 diarize=diarize
             )
-            
+
             # 3. Get Model
+            if job_id:
+                self._update_job(job_id, stage="transcribing")
             transcriber = await self.get_model(model_spec)
-            
+
             # 4. Transcribe segments
             logger.info(f"[{request_id}] Transcribing {len(segments)} segments with {model_spec}")
             final_data = []
@@ -177,7 +189,7 @@ class TranscriptionService:
                     })
             
             if job_id:
-                self._update_job(job_id, status="completed", progress=100, result=final_data, completed_at=time.time())
+                self._update_job(job_id, status="completed", stage=None, progress=100, result=final_data, completed_at=time.time())
                 
             return final_data
 

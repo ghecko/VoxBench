@@ -1,4 +1,4 @@
-# Dockerfile for Multi-Transcribe on NVIDIA Spark (Blackwell / GB10)
+# Dockerfile for VoxHub on NVIDIA Spark (Blackwell / GB10)
 FROM nvcr.io/nvidia/pytorch:26.03-py3
 
 # Install uv for fast dependency management

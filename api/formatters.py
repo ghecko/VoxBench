@@ -26,7 +26,7 @@ def format_transcription(transcript_data: List[Dict[str, Any]], response_format:
                     "start": seg["start"],
                     "end": seg["end"],
                     "text": seg["text"],
-                    "speaker": seg.get("speaker", "SPEAKER_00"), # VoxBench extension
+                    "speaker": seg.get("speaker", "SPEAKER_00"), # VoxHub extension
                     # Mocking mandatory OpenAI fields if missing
                     "avg_logprob": 0.0,
                     "compression_ratio": 0.0,

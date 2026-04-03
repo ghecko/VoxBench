@@ -1,13 +1,13 @@
 services:
   # Updated Spark service (The "Super-Dockerfile" for Blackwell/GB10)
-  multi-transcribe-spark:
+  voxhub-spark:
     build:
       context: .
       dockerfile: Dockerfile.spark
       args:
         MODEL_ID: ${MODEL_ID:-mistralai/Voxtral-Mini-4B-Realtime-2602}
         PREDOWNLOAD_MODEL: ${PREDOWNLOAD_MODEL:-1}
-    image: multi-transcribe:spark
+    image: voxhub:spark
     deploy:
       resources:
         reservations:
@@ -26,11 +26,11 @@ services:
     command: --help
 
   # Legacy/Other platform fallbacks (kept for compatibility)
-  multi-transcribe-rocm:
+  voxhub-rocm:
     build:
       context: .
       dockerfile: Dockerfile.rocm
-    image: multi-transcribe:rocm
+    image: voxhub:rocm
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
@@ -44,11 +44,11 @@ services:
       - HF_TOKEN=${HF_TOKEN}
     command: --help --device rocm
 
-  multi-transcribe-cpu:
+  voxhub-cpu:
     build:
       context: .
       dockerfile: Dockerfile.cpu
-    image: multi-transcribe:cpu
+    image: voxhub:cpu
     volumes:
       - .:/app
       - ./outputs:/outputs
@@ -57,12 +57,12 @@ services:
       - HF_TOKEN=${HF_TOKEN}
     command: --help --device cpu
 
-  # ─── VoxBench OpenAI-Compatible API ────────────────────────────
-  voxbench-api:
+  # ─── VoxHub OpenAI-Compatible API ────────────────────────────
+  voxhub-api:
     build:
       context: .
       dockerfile: Dockerfile.spark
-    image: voxbench-api:spark
+    image: voxhub-api:spark
     ports:
       - "8000:8000"
     deploy:
@@ -79,10 +79,10 @@ services:
       - multi_hf_cache:/app/models
     environment:
       - HF_TOKEN=${HF_TOKEN}
-      - VOXBENCH_MODEL=${VOXBENCH_MODEL:-whisper:turbo}
-      - VOXBENCH_VAD=pyannote
-      - VOXBENCH_DIARIZE=true
-      - VOXBENCH_DEVICE=auto
+      - VOXHUB_MODEL=${VOXHUB_MODEL:-whisper:turbo}
+      - VOXHUB_VAD=pyannote
+      - VOXHUB_DIARIZE=true
+      - VOXHUB_DEVICE=auto
     entrypoint: ["python", "server.py"]
 
 volumes:
