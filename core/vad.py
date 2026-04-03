@@ -44,13 +44,31 @@ class SileroVAD:
         """
         Detect speech segments AND return per-segment confidence scores.
         Used by HybridVAD to make override decisions.
+
+        Uses a single streaming pass over the full audio to collect frame-level
+        probabilities, then maps each detected segment to the peak probability
+        observed within its time range. This is O(n) over the audio length
+        regardless of how many segments exist — much faster than the previous
+        approach of re-running the model per segment.
+
         Returns [{"start": float_s, "end": float_s, "probability": float}]
         """
         wav = torch.from_numpy(audio.copy())
+        frame_size = 512  # Silero operates on 512-sample (32ms @ 16kHz) frames
 
-        # Get raw frame-level speech probabilities from Silero
-        from silero_vad import get_speech_timestamps
-        timestamps = get_speech_timestamps(
+        # --- Pass 1: Single streaming pass to collect all frame probabilities ---
+        self.model.reset_states()
+        frame_probs = []
+        for i in range(0, len(wav), frame_size):
+            frame = wav[i:i + frame_size]
+            if len(frame) < frame_size:
+                frame = torch.nn.functional.pad(frame, (0, frame_size - len(frame)))
+            prob = self.model(frame.unsqueeze(0), sampling_rate).item()
+            frame_probs.append(prob)
+
+        # --- Pass 2: Get speech timestamps (Silero resets internally) ---
+        self.model.reset_states()
+        timestamps = self.get_speech_timestamps(
             wav, self.model,
             sampling_rate=sampling_rate,
             threshold=self.threshold,
@@ -59,24 +77,17 @@ class SileroVAD:
             return_seconds=True,
         )
 
-        # Re-run the model on each detected segment to get its peak probability.
-        # Silero operates on 512-sample (32ms @ 16kHz) frames.
-        frame_size = 512
+        # --- Map each segment to its peak frame probability ---
         results = []
         for t in timestamps:
-            start_samp = int(t["start"] * sampling_rate)
-            end_samp = int(t["end"] * sampling_rate)
-            segment_wav = wav[start_samp:end_samp]
+            start_frame = int(t["start"] * sampling_rate) // frame_size
+            end_frame = int(t["end"] * sampling_rate) // frame_size + 1
+            end_frame = min(end_frame, len(frame_probs))
 
-            # Compute frame-level probabilities for this segment
-            max_prob = 0.0
-            self.model.reset_states()
-            for i in range(0, len(segment_wav), frame_size):
-                frame = segment_wav[i:i + frame_size]
-                if len(frame) < frame_size:
-                    frame = torch.nn.functional.pad(frame, (0, frame_size - len(frame)))
-                prob = self.model(frame.unsqueeze(0), sampling_rate).item()
-                max_prob = max(max_prob, prob)
+            if start_frame < end_frame:
+                max_prob = max(frame_probs[start_frame:end_frame])
+            else:
+                max_prob = 0.0
 
             results.append({
                 "start": t["start"],
@@ -184,6 +195,13 @@ class HybridVAD:
         logger.info(f"[HybridVAD]   -> {len(pyannote_segments)} refined segments")
 
         # --- Step 3: Reconcile with safety-net override ---
+        # For each Silero segment, find sub-regions NOT covered by Pyannote.
+        # If Silero's confidence for that segment was above the override threshold,
+        # add the uncovered sub-regions as override segments.
+        #
+        # This fixes the "whole-segment coverage" bug: a 3-minute Silero segment
+        # could be 80% covered by Pyannote, but the remaining 20% (36s of speech)
+        # would be silently dropped. Now those gaps are detected and preserved.
         logger.info(
             f"[HybridVAD] Step 3/3: Reconciling (override_threshold={self.override_threshold})"
         )
@@ -191,20 +209,29 @@ class HybridVAD:
 
         overrides_added = 0
         for s_seg in silero_segments:
-            # Check if Pyannote already covers this region (>50% overlap)
-            covered = self._is_covered(s_seg, pyannote_segments)
-            if not covered and s_seg["probability"] >= self.override_threshold:
-                # Safety net: Silero is very confident but Pyannote missed it
-                final_segments.append({
-                    "start": s_seg["start"],
-                    "end": s_seg["end"],
-                    "speaker": "SPEAKER_OVERRIDE" if diarize else "SPEAKER_00",
-                })
-                overrides_added += 1
+            gaps = self._find_uncovered_regions(s_seg, pyannote_segments)
+            if not gaps:
+                continue
+
+            # Only override if Silero was confident about this segment
+            if s_seg["probability"] >= self.override_threshold:
+                for gap in gaps:
+                    final_segments.append({
+                        "start": gap["start"],
+                        "end": gap["end"],
+                        "speaker": "SPEAKER_OVERRIDE" if diarize else "SPEAKER_00",
+                    })
+                    overrides_added += 1
+            else:
+                logger.debug(
+                    f"[HybridVAD]   Skipping {len(gaps)} gap(s) in "
+                    f"[{s_seg['start']:.1f}-{s_seg['end']:.1f}s] — "
+                    f"Silero prob {s_seg['probability']:.2f} < override {self.override_threshold}"
+                )
 
         if overrides_added:
             logger.info(
-                f"[HybridVAD]   -> {overrides_added} Silero override(s) added"
+                f"[HybridVAD]   -> {overrides_added} Silero override segment(s) added"
             )
 
         # Sort by start time
@@ -221,25 +248,66 @@ class HybridVAD:
         return final_segments
 
     @staticmethod
-    def _is_covered(silero_seg: Dict, pyannote_segments: List[Dict], min_overlap: float = 0.5) -> bool:
+    def _find_uncovered_regions(
+        silero_seg: Dict,
+        pyannote_segments: List[Dict],
+        min_gap_duration: float = 0.3,
+    ) -> List[Dict]:
         """
-        Check whether a Silero segment is sufficiently covered by any Pyannote segment.
-        Coverage is measured as the fraction of the Silero segment's duration that
-        overlaps with Pyannote output.
+        Find sub-regions of a Silero segment that are NOT covered by any Pyannote segment.
+
+        Instead of a binary "covered or not" check on the whole segment, this walks
+        through the Silero time range and identifies every gap that Pyannote didn't
+        claim. Gaps shorter than min_gap_duration (default 300ms) are ignored to
+        avoid flooding the pipeline with micro-segments.
+
+        Returns a list of {"start": float, "end": float} dicts for each gap, or
+        an empty list if the Silero segment is fully covered.
         """
         s_start, s_end = silero_seg["start"], silero_seg["end"]
-        s_dur = s_end - s_start
-        if s_dur <= 0:
-            return True  # Degenerate segment, skip
+        if s_end - s_start <= 0:
+            return []
 
-        total_overlap = 0.0
+        # Collect Pyannote segments that overlap with this Silero segment, sorted
+        overlapping = []
         for p_seg in pyannote_segments:
-            overlap_start = max(s_start, p_seg["start"])
-            overlap_end = min(s_end, p_seg["end"])
-            if overlap_end > overlap_start:
-                total_overlap += overlap_end - overlap_start
+            p_start = max(s_start, p_seg["start"])
+            p_end = min(s_end, p_seg["end"])
+            if p_end > p_start:
+                overlapping.append((p_start, p_end))
 
-        return (total_overlap / s_dur) >= min_overlap
+        if not overlapping:
+            # Pyannote has zero coverage of this entire Silero segment
+            return [{"start": s_start, "end": s_end}]
+
+        overlapping.sort(key=lambda x: x[0])
+
+        # Merge overlapping Pyannote intervals within the Silero range
+        merged = [overlapping[0]]
+        for start, end in overlapping[1:]:
+            if start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        # Walk the Silero range and collect gaps between merged Pyannote intervals
+        gaps = []
+        cursor = s_start
+
+        for m_start, m_end in merged:
+            if m_start > cursor:
+                gap_dur = m_start - cursor
+                if gap_dur >= min_gap_duration:
+                    gaps.append({"start": round(cursor, 3), "end": round(m_start, 3)})
+            cursor = max(cursor, m_end)
+
+        # Trailing gap after the last Pyannote interval
+        if cursor < s_end:
+            gap_dur = s_end - cursor
+            if gap_dur >= min_gap_duration:
+                gaps.append({"start": round(cursor, 3), "end": round(s_end, 3)})
+
+        return gaps
 
 
 class UnifiedVAD:
