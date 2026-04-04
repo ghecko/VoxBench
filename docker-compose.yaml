@@ -80,7 +80,7 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - VOXHUB_MODEL=${VOXHUB_MODEL:-whisper:turbo}
-      - VOXHUB_VAD=pyannote
+      - VOXHUB_VAD=hybrid
       - VOXHUB_DIARIZE=true
       - VOXHUB_DEVICE=auto
     entrypoint: ["python", "server.py"]

@@ -34,18 +34,19 @@ async def transcribe_audio(
         Form(alias="timestamp_granularities[]"),
     ] = ["segment"],
     diarize: Annotated[Optional[bool], Form()] = None,
+    vad_mode: Annotated[Optional[str], Form()] = None,
 ):
     """
     OpenAI-compatible transcription endpoint.
     """
     request_id = getattr(request.state, "request_id", "unknown")
     service = get_transcription_service(config)
-    
+
     # 1. Save uploaded file to temp
     with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as tmp:
         shutil.copyfileobj(file.file, tmp)
         temp_path = tmp.name
-        
+
     try:
         # 2. Run transcription process
         # model, language, etc. from form or config defaults
@@ -55,6 +56,7 @@ async def transcribe_audio(
             language=language,
             prompt=prompt,
             diarize=diarize,
+            vad_mode=vad_mode,
             request_id=request_id
         )
         
@@ -112,19 +114,20 @@ async def create_transcription_job(
     prompt: Annotated[Optional[str], Form()] = None,
     response_format: Annotated[ResponseFormat, Form()] = ResponseFormat.JSON,
     diarize: Annotated[Optional[bool], Form()] = None,
+    vad_mode: Annotated[Optional[str], Form()] = None,
 ):
     request_id = getattr(request.state, "request_id", "unknown")
     job_id = str(uuid.uuid4())
     service = get_transcription_service(config)
-    
+
     # 1. Save uploaded file to temp
     with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as tmp:
         shutil.copyfileobj(file.file, tmp)
         temp_path = tmp.name
-        
+
     # 2. Create job state
     service.create_job(job_id)
-    
+
     # 3. Queue background task
     background_tasks.add_task(
         service.transcribe_job_runner,
@@ -134,6 +137,7 @@ async def create_transcription_job(
         language=language,
         prompt=prompt,
         diarize=diarize,
+        vad_mode=vad_mode,
         request_id=request_id
     )
     

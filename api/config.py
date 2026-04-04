@@ -34,7 +34,7 @@ class ServerConfig(BaseSettings):
     # Core settings
     model: str = Field(default="whisper:turbo")
     device: Device = Field(default=Device.AUTO)
-    vad: VadMode = Field(default=VadMode.PYANNOTE)
+    vad: VadMode = Field(default=VadMode.HYBRID)
     diarize: bool = Field(default=True)
     
     # Server settings
