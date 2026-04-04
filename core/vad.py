@@ -237,8 +237,15 @@ class HybridVAD:
         # Sort by start time
         final_segments.sort(key=lambda s: s["start"])
 
-        # Strip speaker labels if diarization was not requested
-        if not diarize:
+        # --- Step 4: Assign override segments to nearest known speaker ---
+        # Override segments have no speaker label from Pyannote (it missed them).
+        # Assign each one to the nearest Pyannote-labeled speaker by time proximity.
+        # This keeps the diarization coherent instead of showing "SPEAKER_OVERRIDE".
+        if diarize and pyannote_segments:
+            final_segments = self._assign_override_speakers(
+                final_segments, pyannote_segments
+            )
+        elif not diarize:
             final_segments = [
                 {"start": s["start"], "end": s["end"], "speaker": s.get("speaker", "SPEAKER_00")}
                 for s in final_segments
@@ -246,6 +253,43 @@ class HybridVAD:
 
         logger.info(f"[HybridVAD] Final: {len(final_segments)} segments")
         return final_segments
+
+    @staticmethod
+    def _assign_override_speakers(
+        segments: List[Dict],
+        pyannote_segments: List[Dict],
+    ) -> List[Dict]:
+        """
+        Replace SPEAKER_OVERRIDE labels with the nearest known speaker.
+
+        For each override segment, find the closest Pyannote segment by time
+        distance (gap between endpoints) and adopt its speaker label. If no
+        Pyannote segments exist, fall back to SPEAKER_00.
+        """
+        result = []
+        for seg in segments:
+            if seg.get("speaker") != "SPEAKER_OVERRIDE":
+                result.append(seg)
+                continue
+
+            # Find the Pyannote segment closest in time
+            best_speaker = "SPEAKER_00"
+            best_distance = float("inf")
+            mid = (seg["start"] + seg["end"]) / 2
+
+            for p_seg in pyannote_segments:
+                # Distance = gap between the two segments (0 if overlapping)
+                p_mid = (p_seg["start"] + p_seg["end"]) / 2
+                dist = abs(mid - p_mid)
+                if dist < best_distance:
+                    best_distance = dist
+                    best_speaker = p_seg.get("speaker", "SPEAKER_00")
+
+            assigned = dict(seg)
+            assigned["speaker"] = best_speaker
+            result.append(assigned)
+
+        return result
 
     @staticmethod
     def _find_uncovered_regions(
