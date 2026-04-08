@@ -21,16 +21,6 @@ ENV VIRTUAL_ENV=/opt/venv
 RUN uv venv --system-site-packages $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# The NVIDIA base image ships transformer_engine (for FP8 training) which
-# links against a cuBLAS symbol not present at runtime. VoxHub doesn't use
-# FP8 training, so we remove it to prevent "undefined symbol" import crashes.
-# (--system-site-packages exposes all system packages, including broken ones.)
-RUN PYSITE=$(python -c "import site; print(site.getsitepackages()[0])") && \
-    if [ -d "$PYSITE/transformer_engine" ]; then \
-        mv "$PYSITE/transformer_engine" "$PYSITE/_disabled_transformer_engine"; \
-        echo "Disabled transformer_engine at $PYSITE"; \
-    fi
-
 # Install all Python dependencies using uv.
 # The base image provides a custom-built torch (+ torchaudio, torchvision)
 # that is ABI-matched to its CUDA toolkit. These are pre-release builds
@@ -43,6 +33,19 @@ RUN printf 'torch>=0.0.0\ntorchaudio>=0.0.0\ntorchvision>=0.0.0\n' > /tmp/overri
     uv pip install --override /tmp/overrides.txt 'nemo_toolkit[asr]' && \
     uv pip install --force-reinstall 'transformers>=4.49.0' && \
     rm -f /tmp/overrides.txt
+
+# The NVIDIA base image ships transformer_engine (for FP8 training) which
+# links against a cuBLAS symbol not available at runtime in this image.
+# NeMo's nemo_toolkit[asr] (installed above) may also pull it in as a
+# transitive dependency. Either way, VoxHub doesn't use FP8 training — and
+# NeMo only does a safe_import() that gracefully handles ImportError.
+# We disable it AFTER all pip installs to catch both the base-image copy
+# and any version re-installed by nemo.
+RUN find / -type d -name "transformer_engine" -path "*/site-packages/*" 2>/dev/null | \
+    while read dir; do \
+        echo "Disabling transformer_engine: $dir"; \
+        mv "$dir" "${dir}_disabled"; \
+    done
 
 # Copy project files (context is filtered by .dockerignore)
 COPY . .
