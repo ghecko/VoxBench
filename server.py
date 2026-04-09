@@ -36,6 +36,14 @@ async def lifespan(app: FastAPI):
     ttl_display = f"{config.result_ttl}s" if config.result_ttl > 0 else "disabled"
     logger.info(f"Result TTL   : {ttl_display}")
 
+    # Embedding security notice
+    if config.allow_insecure_embeddings:
+        logger.warning(
+            "Embeddings over HTTP enabled (VOXHUB_ALLOW_INSECURE_EMBEDDINGS=true). "
+            "This is safe inside a Docker network. If VoxHub is exposed publicly, "
+            "set VOXHUB_ALLOW_INSECURE_EMBEDDINGS=false to enforce HTTPS."
+        )
+
     yield
     logger.info("Shutting down VoxHub API Server")
 
