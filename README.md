@@ -43,40 +43,56 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ### Cross-project networking
 
-The `voxhub-api` service joins an external Docker network named `proxy-net`
-so sibling compose stacks (e.g. OpenHiNotes) can reach it by hostname at
-`http://voxhub-api:8000` instead of going through `localhost`.
+The `voxhub-api` service is **not** published on a host port. It is reachable
+only over a private Docker bridge network named `hinotes-internal`, owned by
+the OpenHiNotes compose project. This keeps the API off the LAN — Caddy and
+other proxy networks cannot see it.
 
-Create the network once on the host (no-op if it already exists):
+VoxHub joins `hinotes-internal` as `external`, so the network must already
+exist when VoxHub starts. Normally the OpenHiNotes stack creates it on its
+own `docker compose up`. If you want to bring VoxHub up first, create it
+manually (no-op if it already exists):
 
 ```bash
-docker network create proxy-net 2>/dev/null || true
+docker network create hinotes-internal 2>/dev/null || true
 ```
 
-Then on the client project (sibling `docker-compose.yaml`), attach the same
-network and target the hostname:
+On the OpenHiNotes side, the **backend** service must also be on
+`hinotes-internal` (the frontend doesn't need to be):
 
 ```yaml
 services:
-  openhinotes:
+  backend:
     networks:
-      - default
-      - proxy-net
+      - hinotes-internal     # already there for backend ↔ frontend / db
     environment:
       - VOXHUB_URL=http://voxhub-api:8000
 
 networks:
-  proxy-net:
-    external: true
-    name: proxy-net
+  hinotes-internal:
+    name: hinotes-internal
+    driver: bridge           # owned by OpenHiNotes — declared without external:
 ```
 
-Verify resolution from inside the client container:
+After changing the OpenHiNotes backend's networks list, recreate it so the
+new attachment takes effect (a plain `restart` won't pick up network
+changes):
 
 ```bash
-docker compose exec openhinotes getent hosts voxhub-api
-docker compose exec openhinotes curl -sS http://voxhub-api:8000/v1/models
+docker compose up -d --force-recreate backend
 ```
+
+Verify resolution from inside the OpenHiNotes backend:
+
+```bash
+docker compose exec backend getent hosts voxhub-api
+docker compose exec backend wget -qO- http://voxhub-api:8000/v1/models
+```
+
+> **Why not `proxy-net`?** `proxy-net` is the network Caddy uses to expose
+> services to the LAN. Putting `voxhub-api` there would make it reachable —
+> directly or via Caddy — from outside the host. `hinotes-internal` is a
+> private bridge that nothing on the LAN can route to.
 
 ---
 

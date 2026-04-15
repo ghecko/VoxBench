@@ -68,8 +68,11 @@ services:
     # this project's directory name (which compose otherwise prefixes).
     container_name: voxhub-api
     hostname: voxhub-api
-    ports:
-      - "8000:8000"
+    # No `ports:` block — the API is reachable only via the shared
+    # proxy-net Docker network at http://voxhub-api:8000. To expose it on
+    # the host as well, add e.g. `ports: ["127.0.0.1:8000:8000"]`.
+    expose:
+      - "8000"
     deploy:
       resources:
         reservations:
@@ -90,23 +93,24 @@ services:
       - VOXHUB_DEVICE=auto
     entrypoint: ["python", "server.py"]
     networks:
-      - default       # keeps intra-project links working
-      - proxy-net     # shared network reachable from sibling compose stacks
+      - default            # keeps intra-project links working
+      - hinotes-internal   # private link to the OpenHiNotes backend
 
 volumes:
   multi_hf_cache:
 
 networks:
-  # External shared network for cross-project DNS resolution. Sibling compose
-  # projects (e.g. OpenHiNotes) attach to the same network and can then
-  # reach this service at http://voxhub-api:8000.
+  # Private network owned by the OpenHiNotes compose project. VoxHub joins
+  # it as `external` so the OpenHiNotes backend can reach voxhub-api at
+  # http://voxhub-api:8000 over a closed bridge — never via Caddy / LAN.
   #
-  # The network is declared `external` here on purpose — VoxHub does not own
-  # it, it just joins it. Whichever stack creates it first should declare it,
-  # the rest reference it as external. If no other project creates it, run:
-  #     docker network create proxy-net
+  # The network must already exist when VoxHub starts. The OpenHiNotes
+  # compose stack creates it (declared without `external:` on its side); if
+  # OpenHiNotes is not running, create it manually:
+  #     docker network create hinotes-internal
   #
-  # See README ("Cross-project networking") for the OpenHiNotes-side block.
-  proxy-net:
+  # See README ("Cross-project networking") for the matching OpenHiNotes
+  # backend-side YAML block.
+  hinotes-internal:
     external: true
-    name: proxy-net
+    name: hinotes-internal
