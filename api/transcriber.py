@@ -239,8 +239,18 @@ class TranscriptionService:
             if needs_detection:
                 detector = self._get_lang_detector()
                 if detector is not None:
-                    if job_id:
-                        self._update_job(job_id, stage="detecting_language")
+                    # NOTE: We intentionally do NOT emit a new job stage
+                    # here (e.g. stage="detecting_language"). Existing API
+                    # consumers (OpenHiNotes) map a fixed set of stage
+                    # values — {loading, vad, transcribing} — to UI
+                    # progress; an unrecognized stage breaks their bar.
+                    #
+                    # TODO: once consumers have been taught to handle the
+                    # new stage, switch this back to:
+                    #     self._update_job(job_id, stage="detecting_language")
+                    # Detection typically takes <1s after the first call
+                    # (model is cached), so the silent gap is barely
+                    # perceptible in practice.
                     detected = await asyncio.to_thread(detector.detect, audio)
                     if detected:
                         logger.info(
