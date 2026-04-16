@@ -30,6 +30,55 @@ _SAMPLE_RATE = 16000
 # raw Whisper vocab covers ~100; we let the model decide and only normalize
 # the result to ISO-639-1 lowercase strings.
 
+# ── Per-backend supported language sets ───────────────────────────────
+# None means "all languages" (the backend detects/handles any language).
+# A set means the backend only supports those ISO-639-1 codes; if the
+# detected language is not in the set, the caller should pass language=None
+# and let the backend fall back to its own default.
+_MODEL_SUPPORTED_LANGUAGES: dict[str, Optional[set[str]]] = {
+    # Whisper: supports ~99 languages natively via its decoder
+    "whisper:": None,
+    # Voxtral (Mistral): 13 languages
+    "voxtral:": {
+        "fr", "de", "en", "es", "pt", "it", "nl",
+        "pl", "ru", "zh", "ja", "ko", "ar",
+    },
+    # Granite Speech (IBM): 6 languages
+    "granite:": {"en", "fr", "de", "es", "pt", "ja"},
+    # Moonshine (UsefulSensors): English only
+    "moonshine:": {"en"},
+    # Canary (NVIDIA NeMo): 4 languages
+    "canary:": {"en", "de", "es", "fr"},
+}
+
+
+def get_supported_languages(model_spec: str) -> Optional[set[str]]:
+    """Return the set of ISO-639-1 language codes a model supports.
+
+    Returns None if the model supports all languages (or is unknown).
+    """
+    for prefix, langs in _MODEL_SUPPORTED_LANGUAGES.items():
+        if model_spec.startswith(prefix):
+            return langs
+    return None  # unknown model → assume all languages supported
+
+
+def validate_detected_language(
+    detected: str,
+    model_spec: str,
+) -> Optional[str]:
+    """Validate a detected language code against the target model's capabilities.
+
+    Returns the language code if supported, or None if not (letting the
+    backend fall back to its own default / auto-detection).
+    """
+    supported = get_supported_languages(model_spec)
+    if supported is None:
+        return detected  # model accepts everything
+    if detected in supported:
+        return detected
+    return None
+
 
 class WhisperLanguageDetector:
     """

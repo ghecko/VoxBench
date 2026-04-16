@@ -76,8 +76,8 @@ class ServerConfig(BaseSettings):
         description="Auto-detect spoken language for backends that need a hint",
     )
     lang_detect_model: str = Field(
-        default="openai/whisper-tiny",
-        description="HF model id used for language probing",
+        default="openai/whisper-base",
+        description="HF model id used for language probing (base is more accurate than tiny with minimal overhead)",
     )
 
     # Embedding security

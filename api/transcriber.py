@@ -9,7 +9,7 @@ from core.audio import load_audio
 from core.registry import create_transcriber, list_supported_models, normalize_model_spec
 from core.vad import UnifiedVAD
 from core.segments import sanitize_segments, BoundaryRefiner
-from core.lang_detect import WhisperLanguageDetector
+from core.lang_detect import WhisperLanguageDetector, validate_detected_language
 from api.config import ServerConfig
 
 logger = logging.getLogger(__name__)
@@ -198,6 +198,40 @@ class TranscriptionService:
         if job_id in self._jobs:
             self._jobs[job_id].update(kwargs)
 
+    # ── Pipeline progress ranges ────────────────────────────────────
+    # Each pipeline phase occupies a fixed slice of the 0–100 progress
+    # bar.  Frequent updates within each phase keep the stale-job timer
+    # in polling consumers (OpenHiNotes) happy and give users meaningful
+    # feedback about what is happening.
+    _PROG_LOADING      = (0,  5)    # audio load
+    _PROG_LANG_DETECT  = (5,  8)    # language detection
+    _PROG_VAD          = (8, 45)    # VAD + diarization
+    _PROG_SANITIZE     = (45, 48)   # segment sanitisation / boundary refinement
+    _PROG_MODEL_LOAD   = (48, 51)   # transcription model load
+    _PROG_TRANSCRIBE   = (52, 95)   # segment-by-segment transcription
+    _PROG_EMBEDDINGS   = (95, 100)  # speaker embedding extraction
+    # NOTE: the 1-point gap between MODEL_LOAD end (51) and TRANSCRIBE
+    # start (52) is intentional — it guarantees a progress change when
+    # entering the transcription loop, which resets the stale-job timer
+    # in polling consumers.
+
+    def _job_progress(self, job_id: Optional[str], progress: float,
+                      stage: Optional[str] = None, **extra):
+        """Convenience helper: update job progress (and optionally stage)."""
+        if not job_id:
+            return
+        kwargs: Dict[str, Any] = {"progress": round(progress, 1)}
+        if stage is not None:
+            kwargs["stage"] = stage
+        kwargs.update(extra)
+        self._update_job(job_id, **kwargs)
+
+    @staticmethod
+    def _lerp(rng: tuple, frac: float) -> float:
+        """Linearly interpolate within a (lo, hi) progress range."""
+        lo, hi = rng
+        return lo + (hi - lo) * max(0.0, min(1.0, frac))
+
     async def transcribe(
         self,
         audio_path: str,
@@ -213,23 +247,23 @@ class TranscriptionService:
         model_spec = normalize_model_spec(model_spec or self.config.model)
         vad_mode = vad_mode or self.config.vad
         diarize = diarize if diarize is not None else self.config.diarize
-        
+
         async with self._semaphore:
-            # 1. Load Audio
+            # ── 1. Load audio ─────────────────────────────────────────
             if job_id:
                 if self._is_cancelled(job_id):
                     raise CancelledError(f"Job {job_id} cancelled before loading")
-                self._update_job(job_id, stage="loading")
+                self._job_progress(job_id, self._PROG_LOADING[0], stage="loading")
             logger.info(f"[{request_id}] Loading audio: {audio_path}")
             audio = await asyncio.to_thread(load_audio, audio_path)
+            self._job_progress(job_id, self._PROG_LOADING[1])
 
-            # 1b. Optional language auto-detect.
-            #   - Skipped if the request supplied an explicit language (other than "auto").
-            #   - Skipped for backends that detect natively:
-            #       * whisper:*  — Whisper's own decoder picks the language.
-            #       * voxtral:*  — Mistral confirms native auto-detection
-            #                      across all 13 supported languages.
-            #   - On failure we silently proceed with language=None.
+            # ── 1b. Language auto-detection ────────────────────────────
+            #   - Skipped when an explicit language is provided.
+            #   - Skipped for backends with native detection (whisper:*, voxtral:*).
+            #   - Uses whisper-base (configurable) to probe the first 30s.
+            #   - Validates the result against the target model's supported
+            #     languages; falls back to None if unsupported.
             _NATIVE_LID_PREFIXES = ("whisper:", "voxtral:")
             normalized_lang = (language or "").strip().lower()
             needs_detection = (
@@ -239,44 +273,93 @@ class TranscriptionService:
             if needs_detection:
                 detector = self._get_lang_detector()
                 if detector is not None:
-                    # NOTE: We intentionally do NOT emit a new job stage
-                    # here (e.g. stage="detecting_language"). Existing API
-                    # consumers (OpenHiNotes) map a fixed set of stage
-                    # values — {loading, vad, transcribing} — to UI
-                    # progress; an unrecognized stage breaks their bar.
-                    #
-                    # TODO: once consumers have been taught to handle the
-                    # new stage, switch this back to:
-                    #     self._update_job(job_id, stage="detecting_language")
-                    # Detection typically takes <1s after the first call
-                    # (model is cached), so the silent gap is barely
-                    # perceptible in practice.
+                    if job_id:
+                        self._job_progress(job_id, self._PROG_LANG_DETECT[0], stage="detecting_language")
                     detected = await asyncio.to_thread(detector.detect, audio)
                     if detected:
-                        logger.info(
-                            f"[{request_id}] Auto-detected language: {detected}"
-                        )
-                        language = detected
+                        validated = validate_detected_language(detected, model_spec)
+                        if validated:
+                            logger.info(
+                                f"[{request_id}] Auto-detected language: {detected}"
+                            )
+                            language = validated
+                        else:
+                            logger.info(
+                                f"[{request_id}] Detected '{detected}' not supported "
+                                f"by {model_spec}; proceeding without language hint"
+                            )
                     else:
                         logger.info(
                             f"[{request_id}] Language detection inconclusive; "
                             f"proceeding without hint"
                         )
+            self._job_progress(job_id, self._PROG_LANG_DETECT[1])
 
-            # 2. Run VAD/Diarization
+            # ── 2. VAD / Diarization ──────────────────────────────────
             if job_id:
                 if self._is_cancelled(job_id):
                     raise CancelledError(f"Job {job_id} cancelled before VAD")
-                self._update_job(job_id, stage="vad")
+                self._job_progress(job_id, self._PROG_VAD[0], stage="vad")
             logger.info(f"[{request_id}] Running VAD ({vad_mode}, diarize={diarize})")
+
+            # Build a progress callback that maps the VAD engine's 0–1
+            # fraction into the overall progress bar range for this phase.
+            # Not all pyannote versions support the internal hook, so the
+            # callback may never fire — the heartbeat below covers that gap.
+            _last_vad_frac = [0.0]  # mutable ref shared with heartbeat
+
+            def _vad_progress(stage_name: str, frac: float):
+                _last_vad_frac[0] = frac
+                self._job_progress(
+                    job_id,
+                    self._lerp(self._PROG_VAD, frac),
+                    stage=stage_name,
+                )
+
             vad_engine = self.get_vad(vad_mode)
-            segments = await asyncio.to_thread(
-                vad_engine.detect,
-                audio,
-                diarize=diarize
+
+            # Run VAD in a background thread with a keepalive heartbeat.
+            #
+            # The pyannote community pipeline doesn't report internal step
+            # progress, so the bar would otherwise freeze at ~12 % for the
+            # entire diarization.  Rather than faking an estimated curve
+            # (which is misleading on different hardware), we bump progress
+            # by +0.1 every few seconds — just enough to reset the stale-
+            # job timer in OpenHiNotes without lying about real progress.
+            vad_future = asyncio.ensure_future(
+                asyncio.to_thread(
+                    vad_engine.detect,
+                    audio,
+                    diarize=diarize,
+                    on_progress=_vad_progress,
+                )
             )
 
+            _HEARTBEAT_INTERVAL = 5   # seconds
+            _HEARTBEAT_BUMP = 0.1     # barely visible — just resets stale timer
+            _VAD_CEILING = self._PROG_VAD[1] - 1  # never exceed VAD range
+
+            while not vad_future.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(vad_future),
+                        timeout=_HEARTBEAT_INTERVAL,
+                    )
+                except asyncio.TimeoutError:
+                    pass  # expected — VAD still running
+                if not vad_future.done() and job_id:
+                    cur = self._jobs.get(job_id, {}).get("progress", 0)
+                    stage = "diarizing" if diarize else "vad"
+                    self._job_progress(
+                        job_id,
+                        min(cur + _HEARTBEAT_BUMP, _VAD_CEILING),
+                        stage=stage,
+                    )
+
+            segments = vad_future.result()
+
             # 2b. Sanitize segments (overlap resolution, micro-turn absorption)
+            self._job_progress(job_id, self._PROG_SANITIZE[0])
             if len(segments) > 1:
                 segments = await asyncio.to_thread(
                     sanitize_segments, segments,
@@ -292,35 +375,49 @@ class TranscriptionService:
                         refiner.refine_boundaries, audio, segments
                     )
                     logger.info(f"[{request_id}] Boundaries refined with wav2vec2")
+            self._job_progress(job_id, self._PROG_SANITIZE[1])
 
-            # 3. Get Model
+            # ── 3. Load transcription model ───────────────────────────
             if job_id:
                 if self._is_cancelled(job_id):
                     raise CancelledError(f"Job {job_id} cancelled before transcription")
-                self._update_job(job_id, stage="transcribing")
+                self._job_progress(job_id, self._PROG_MODEL_LOAD[0], stage="transcribing")
             transcriber = await self.get_model(model_spec)
+            self._job_progress(job_id, self._PROG_MODEL_LOAD[1], stage="transcribing")
 
-            # 4. Transcribe segments
+            # ── 4. Transcribe segments ────────────────────────────────
             logger.info(f"[{request_id}] Transcribing {len(segments)} segments with {model_spec}")
             final_data = []
-            current_context = prompt # Initial prompt from user
+            current_context = prompt  # Initial prompt from user
             sampling_rate = 16000
-            
+
             for i, seg in enumerate(segments):
                 # Check cancellation between segments
                 if job_id and self._is_cancelled(job_id):
-                    raise CancelledError(f"Job {job_id} cancelled during transcription (segment {i}/{len(segments)})")
+                    raise CancelledError(
+                        f"Job {job_id} cancelled during transcription "
+                        f"(segment {i}/{len(segments)})"
+                    )
 
-                if i % 5 == 0 or i == len(segments) - 1:
-                    logger.info(f"[{request_id}] Progress: {i+1}/{len(segments)} segments processed")
-                    if job_id:
-                        self._update_job(job_id, progress=round((i+1)/len(segments) * 100, 1))
-                
+                n_segs = max(len(segments), 1)
+
+                # ── Pre-inference progress ──
+                # Report the START of this segment's slice so the bar
+                # reflects "working on segment i" rather than jumping to
+                # the finished position before the work is done.  This is
+                # critical for single-segment jobs where the only inference
+                # call (+ FP8 decompression on first use) can take minutes.
+                pre_frac = i / n_segs
+                self._job_progress(
+                    job_id,
+                    self._lerp(self._PROG_TRANSCRIBE, pre_frac),
+                )
+
                 start_samp = int(seg["start"] * sampling_rate)
                 end_samp = int(seg["end"] * sampling_rate)
                 duration = seg["end"] - seg["start"]
 
-                if duration < 0.2: # Skip too short segments
+                if duration < 0.2:  # Skip too short segments
                     continue
 
                 segment_audio = audio[start_samp:end_samp]
@@ -332,7 +429,6 @@ class TranscriptionService:
                     if i == 0 and prompt:
                         context = prompt
                     elif final_data and final_data[-1]["speaker"] == speaker:
-                        # Continue from previous segment by this speaker
                         context = current_context
 
                 # Run inference in thread
@@ -340,20 +436,27 @@ class TranscriptionService:
                     transcriber.transcribe_segment,
                     segment_audio,
                     language=language,
-                    context=context
+                    context=context,
                 )
+
+                # ── Post-inference progress ──
+                post_frac = (i + 1) / n_segs
+                post_progress = self._lerp(self._PROG_TRANSCRIBE, post_frac)
+                if i % 5 == 0 or i == len(segments) - 1:
+                    logger.info(f"[{request_id}] Progress: {i+1}/{len(segments)} segments processed")
+                self._job_progress(job_id, post_progress)
 
                 if not text or not text.strip():
                     continue
 
                 current_context = text
 
-                # Robust Merging Logic: 
+                # Robust Merging Logic:
                 # Merge if same speaker and small gap (0.8s)
                 should_merge = (
-                    final_data and 
-                    final_data[-1]["speaker"] == speaker and 
-                    (seg["start"] - final_data[-1]["end"]) < 0.8
+                    final_data
+                    and final_data[-1]["speaker"] == speaker
+                    and (seg["start"] - final_data[-1]["end"]) < 0.8
                 )
 
                 if should_merge:
@@ -365,12 +468,13 @@ class TranscriptionService:
                         "start": round(seg["start"], 3),
                         "end": round(seg["end"], 3),
                         "speaker": speaker,
-                        "text": str(text)
+                        "text": str(text),
                     })
-            
-            # 5. Extract per-speaker embeddings if requested
+
+            # ── 5. Speaker embeddings ─────────────────────────────────
             result = final_data
             if return_speaker_embeddings and diarize and final_data:
+                self._job_progress(job_id, self._PROG_EMBEDDINGS[0], stage="embeddings")
                 try:
                     from core.embeddings import extract_per_speaker_embeddings
                     logger.info(f"[{request_id}] Extracting per-speaker embeddings")
@@ -387,11 +491,13 @@ class TranscriptionService:
                     }
                 except Exception as e:
                     logger.warning(f"[{request_id}] Speaker embedding extraction failed: {e}")
-                    # Don't fail the transcription — just omit embeddings
                     result = final_data
 
             if job_id:
-                self._update_job(job_id, status="completed", stage=None, progress=100, result=result, completed_at=time.time())
+                self._update_job(
+                    job_id, status="completed", stage=None,
+                    progress=100, result=result, completed_at=time.time(),
+                )
 
             return result
 
