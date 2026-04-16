@@ -2,7 +2,7 @@ import os
 import logging
 import torch
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 from core.diarize import DiarizationAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -170,27 +170,47 @@ class HybridVAD:
         from Pyannote. Override segments (Silero-only) get speaker="SPEAKER_OVERRIDE".
         """
         diarize = kwargs.get("diarize", False)
+        on_progress: Optional[Callable] = kwargs.get("on_progress")
 
         # --- Step 1: Silero gate (sensitive) ---
         logger.info(
             f"[HybridVAD] Step 1/3: Silero gate (threshold={self.silero_threshold})"
         )
+        if on_progress:
+            on_progress("vad", 0.05)  # Silero starting
+
         silero_segments = self.silero.detect_with_probabilities(audio, sampling_rate)
         logger.info(f"[HybridVAD]   -> {len(silero_segments)} candidate segments")
 
         if not silero_segments:
             return []
 
+        if on_progress:
+            on_progress("vad", 0.10)  # Silero complete
+
         # --- Step 2: Pyannote refiner on gated regions ---
         logger.info("[HybridVAD] Step 2/3: Pyannote refinement")
+        if on_progress:
+            on_progress("diarizing", 0.12)  # Pyannote starting
+
         pyannote_kwargs = {}
         if diarize:
             for key in ("num_speakers", "min_speakers", "max_speakers"):
                 if kwargs.get(key) is not None:
                     pyannote_kwargs[key] = kwargs[key]
 
+        # Build a pyannote sub-progress callback that maps pyannote's internal
+        # steps (segmentation/embeddings/clustering) into the 0.12–0.80 range.
+        def _diarize_progress(step_name: str, frac: float):
+            if on_progress:
+                # Map pyannote's 0-1 fraction into overall 0.12-0.80 range
+                overall = 0.12 + frac * 0.68
+                on_progress("diarizing", overall)
+
         pyannote_segments = self.pyannote.diarize(
-            audio, sampling_rate=sampling_rate, **pyannote_kwargs
+            audio, sampling_rate=sampling_rate,
+            on_progress=_diarize_progress,
+            **pyannote_kwargs,
         )
         logger.info(f"[HybridVAD]   -> {len(pyannote_segments)} refined segments")
 
@@ -205,6 +225,8 @@ class HybridVAD:
         logger.info(
             f"[HybridVAD] Step 3/3: Reconciling (override_threshold={self.override_threshold})"
         )
+        if on_progress:
+            on_progress("diarizing", 0.85)  # Reconciliation
         final_segments = list(pyannote_segments)  # Start with Pyannote's output
 
         overrides_added = 0
@@ -252,6 +274,8 @@ class HybridVAD:
             ]
 
         logger.info(f"[HybridVAD] Final: {len(final_segments)} segments")
+        if on_progress:
+            on_progress("diarizing", 1.0)  # VAD+diarization complete
         return final_segments
 
     @staticmethod
@@ -378,29 +402,56 @@ class UnifiedVAD:
     def detect(self, audio: np.ndarray, sampling_rate: int = 16000, **kwargs) -> List[Dict]:
         """
         Orchestrate VAD based on the selected mode.
+
+        Accepts an optional ``on_progress`` callback via kwargs.  The
+        callback signature is ``(stage: str, fraction: float)`` where
+        *stage* is a UI-friendly name ("vad", "diarizing") and *fraction*
+        is 0.0–1.0 within the VAD phase.
         """
+        on_progress: Optional[Callable] = kwargs.pop("on_progress", None)
+
         if self.mode == "silero":
             if not self.vad_model:
                 self.vad_model = SileroVAD()
-            return self.vad_model.detect(audio, sampling_rate)
+            if on_progress:
+                on_progress("vad", 0.05)
+            result = self.vad_model.detect(audio, sampling_rate)
+            if on_progress:
+                on_progress("vad", 1.0)
+            return result
 
         elif self.mode == "pyannote":
             if not self.vad_model:
                 self.vad_model = DiarizationAnalyzer(auth_token=self.hf_token)
 
+            if on_progress:
+                on_progress("diarizing", 0.05)
+
             # Check if we want full diarization or VAD-only
             diarize = kwargs.get("diarize", False)
+
+            # Build a sub-progress callback for pyannote internal steps
+            def _pyannote_progress(step_name: str, frac: float):
+                if on_progress:
+                    on_progress("diarizing", frac)
+
             if diarize:
-                return self.vad_model.diarize(
+                result = self.vad_model.diarize(
                     audio,
                     sampling_rate=sampling_rate,
+                    on_progress=_pyannote_progress,
                     num_speakers=kwargs.get("num_speakers"),
                     min_speakers=kwargs.get("min_speakers"),
-                    max_speakers=kwargs.get("max_speakers")
+                    max_speakers=kwargs.get("max_speakers"),
                 )
             else:
-                segments = self.vad_model.diarize(audio, sampling_rate=sampling_rate)
-                return segments
+                result = self.vad_model.diarize(
+                    audio, sampling_rate=sampling_rate,
+                    on_progress=_pyannote_progress,
+                )
+            if on_progress:
+                on_progress("diarizing", 1.0)
+            return result
 
         elif self.mode == "hybrid":
             if not self.vad_model:
@@ -409,11 +460,14 @@ class UnifiedVAD:
                     override_threshold=self.override_threshold,
                     hf_token=self.hf_token,
                 )
-            return self.vad_model.detect(audio, sampling_rate, **kwargs)
+            # HybridVAD reads on_progress from kwargs
+            return self.vad_model.detect(audio, sampling_rate, on_progress=on_progress, **kwargs)
 
         elif self.mode == "none":
             # Pass full audio as a single segment
             duration = len(audio) / sampling_rate
+            if on_progress:
+                on_progress("vad", 1.0)
             return [{"start": 0.0, "end": duration}]
 
         else:
