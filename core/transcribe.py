@@ -152,6 +152,16 @@ class VoxtralTranscriber(BaseTranscriber):
         else:
             attn_impl = "sdpa"
 
+        # FP8 pre-quantized checkpoints have a dtype mismatch between
+        # embed_tokens (FP8) and lm_head (BF16). When transformers tries
+        # to tie them it calls torch.equal() which can't compare the two
+        # dtypes and raises RuntimeError.  Disabling tie_word_embeddings
+        # at load time sidesteps the comparison entirely; the model still
+        # works because the weights are already stored separately in the
+        # safetensors file.
+        prequant = _is_prequantized(self.model_id)
+        is_fp8 = prequant in ("fp8", "compressed-tensors")
+
         prev_verbosity = hf_logging.get_verbosity()
         hf_logging.set_verbosity_error()
         try:
@@ -163,6 +173,8 @@ class VoxtralTranscriber(BaseTranscriber):
             )
             if quantization_config is not None:
                 load_kwargs["quantization_config"] = quantization_config
+            if is_fp8:
+                load_kwargs["tie_word_embeddings"] = False
 
             # Pick the most specific model class available, per the official
             # Voxtral docs. Falls back to AutoModelForSpeechSeq2Seq for older
@@ -177,10 +189,18 @@ class VoxtralTranscriber(BaseTranscriber):
 
             try:
                 self.model = model_cls.from_pretrained(self.model_id, **load_kwargs)
-            except (ValueError, TypeError) as e:
-                # Some attention backends aren't supported by every model;
-                # fall back to eager so the run still completes.
-                if attn_impl != "eager" and "attn_implementation" in str(e).lower():
+            except (ValueError, TypeError, RuntimeError) as e:
+                err_msg = str(e).lower()
+                # FP8 tie_weights crash — retry with tying disabled
+                if "float8" in err_msg and "tie_word_embeddings" not in load_kwargs:
+                    logging.getLogger(__name__).warning(
+                        "FP8 dtype clash during tie_weights (%s); retrying with "
+                        "tie_word_embeddings=False", e,
+                    )
+                    load_kwargs["tie_word_embeddings"] = False
+                    self.model = model_cls.from_pretrained(self.model_id, **load_kwargs)
+                # Attention backend not supported — retry with eager
+                elif attn_impl != "eager" and "attn_implementation" in err_msg:
                     logging.getLogger(__name__).warning(
                         "attn_implementation=%s rejected (%s); retrying with eager",
                         attn_impl, e,
