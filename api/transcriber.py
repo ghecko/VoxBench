@@ -318,16 +318,14 @@ class TranscriptionService:
 
             vad_engine = self.get_vad(vad_mode)
 
-            # Run VAD in a background thread, with a concurrent heartbeat
-            # that provides estimated progress when the VAD engine doesn't
-            # report its own steps (e.g. pyannote community pipeline).
+            # Run VAD in a background thread with a keepalive heartbeat.
             #
-            # Estimate: diarization takes roughly 0.3–0.7× real-time on
-            # GPU.  We use 0.5× as a baseline and cap at 90 % of the VAD
-            # range so the bar never visually "stalls at 100 %".
-            audio_duration = len(audio) / 16000
-            estimated_seconds = max(audio_duration * 0.5, 10)
-
+            # The pyannote community pipeline doesn't report internal step
+            # progress, so the bar would otherwise freeze at ~12 % for the
+            # entire diarization.  Rather than faking an estimated curve
+            # (which is misleading on different hardware), we bump progress
+            # by +0.1 every few seconds — just enough to reset the stale-
+            # job timer in OpenHiNotes without lying about real progress.
             vad_future = asyncio.ensure_future(
                 asyncio.to_thread(
                     vad_engine.detect,
@@ -337,30 +335,26 @@ class TranscriptionService:
                 )
             )
 
-            heartbeat_interval = 5  # seconds
-            heartbeat_start = time.time()
+            _HEARTBEAT_INTERVAL = 5   # seconds
+            _HEARTBEAT_BUMP = 0.1     # barely visible — just resets stale timer
+            _VAD_CEILING = self._PROG_VAD[1] - 1  # never exceed VAD range
+
             while not vad_future.done():
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(vad_future),
-                        timeout=heartbeat_interval,
+                        timeout=_HEARTBEAT_INTERVAL,
                     )
                 except asyncio.TimeoutError:
                     pass  # expected — VAD still running
                 if not vad_future.done() and job_id:
-                    elapsed = time.time() - heartbeat_start
-                    # Estimated fraction, capped at 0.90 so the bar
-                    # doesn't reach "done" before VAD actually finishes.
-                    est_frac = min(elapsed / estimated_seconds, 0.90)
-                    # Only use the estimate if the VAD engine's own
-                    # callback hasn't already reported further progress.
-                    if est_frac > _last_vad_frac[0]:
-                        stage = "diarizing" if diarize else "vad"
-                        self._job_progress(
-                            job_id,
-                            self._lerp(self._PROG_VAD, est_frac),
-                            stage=stage,
-                        )
+                    cur = self._jobs.get(job_id, {}).get("progress", 0)
+                    stage = "diarizing" if diarize else "vad"
+                    self._job_progress(
+                        job_id,
+                        min(cur + _HEARTBEAT_BUMP, _VAD_CEILING),
+                        stage=stage,
+                    )
 
             segments = vad_future.result()
 
