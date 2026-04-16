@@ -174,7 +174,13 @@ class VoxtralTranscriber(BaseTranscriber):
             if quantization_config is not None:
                 load_kwargs["quantization_config"] = quantization_config
             if is_fp8:
-                load_kwargs["tie_word_embeddings"] = False
+                # tie_word_embeddings must be set on the config object, not
+                # passed as a from_pretrained kwarg — VoxtralRealtime's
+                # __init__ doesn't accept it directly.
+                from transformers import AutoConfig
+                _cfg = AutoConfig.from_pretrained(self.model_id, trust_remote_code=True)
+                _cfg.tie_word_embeddings = False
+                load_kwargs["config"] = _cfg
 
             # Pick the most specific model class available, per the official
             # Voxtral docs. Falls back to AutoModelForSpeechSeq2Seq for older
@@ -192,12 +198,15 @@ class VoxtralTranscriber(BaseTranscriber):
             except (ValueError, TypeError, RuntimeError) as e:
                 err_msg = str(e).lower()
                 # FP8 tie_weights crash — retry with tying disabled
-                if "float8" in err_msg and "tie_word_embeddings" not in load_kwargs:
+                if "float8" in err_msg and "config" not in load_kwargs:
                     logging.getLogger(__name__).warning(
                         "FP8 dtype clash during tie_weights (%s); retrying with "
-                        "tie_word_embeddings=False", e,
+                        "tie_word_embeddings=False via config", e,
                     )
-                    load_kwargs["tie_word_embeddings"] = False
+                    from transformers import AutoConfig
+                    _cfg = AutoConfig.from_pretrained(self.model_id, trust_remote_code=True)
+                    _cfg.tie_word_embeddings = False
+                    load_kwargs["config"] = _cfg
                     self.model = model_cls.from_pretrained(self.model_id, **load_kwargs)
                 # Attention backend not supported — retry with eager
                 elif attn_impl != "eager" and "attn_implementation" in err_msg:
