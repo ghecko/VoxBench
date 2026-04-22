@@ -101,6 +101,7 @@ docker compose exec backend wget -qO- http://voxhub-api:8000/v1/models
 | Family | Specifier | Backend | Key Strength |
 | :--- | :--- | :--- | :--- |
 | **Voxtral** | `voxtral:mini-4b`, `voxtral:small-24b` | Transformers | Real-time native support, HQ French/English |
+| **Voxtral (vLLM)** | `voxtral:mini-4b-vllm`, `voxtral:small-24b-vllm` | vLLM (remote) | 3-10x throughput under load, paged attention |
 | **Whisper** | `whisper:large-v3`, `whisper:turbo`, `whisper:small` | Transformers | Global benchmark leader, extreme throughput |
 | **Granite Speech** | `granite:1b-speech` | Transformers | IBM multilingual (en/fr/de/es/pt/ja), edge-friendly 1B |
 | **Moonshine** | `moonshine:base`, `moonshine:tiny` | Transformers | Ultra-low latency, CPU-efficient |
@@ -113,6 +114,74 @@ Models are defined in `models.yaml` and loaded lazily on first request.
 > `requirements.txt`). Transcription is driven by a chat template — VoxHub
 > wraps the audio with `<|audio|>` plus a per-language instruction
 > automatically; no extra configuration is needed.
+
+### Voxtral: Transformers vs vLLM
+
+Voxtral can be served two ways, side by side. Both backends are wired into the
+same `/v1/audio/transcriptions` endpoint and differ only in the model
+specifier you pass.
+
+| | `voxtral:mini-4b` (Transformers) | `voxtral:mini-4b-vllm` (vLLM) |
+| :--- | :--- | :--- |
+| Process | In-process with VoxHub | Separate `voxtral-vllm` container |
+| Memory footprint on VoxHub | Model loaded lazily in VoxHub GPU | Zero — VoxHub holds only an HTTP client |
+| Throughput under load | Good | 3-10x higher (paged attention + continuous batching) |
+| Extra infra | None | One extra compose service |
+| Cold start | ~10-20 s on first request | ~60-120 s when the vllm service starts |
+| Good for | Dev, low-volume, edge boxes | Production, concurrent users |
+
+**Key point on memory:** enabling a Voxtral model in `models.yaml` does *not*
+load it eagerly. Models load lazily on first request. For the vLLM variant,
+the VoxHub API container stays light regardless — the weights live in the
+`voxtral-vllm` container, which *does* hold them in GPU memory for its
+lifetime. If you don't start the vllm profile, that cost is zero.
+
+#### Enabling the vLLM backend
+
+```bash
+# Start VoxHub together with the vLLM server
+docker compose --profile vllm up -d voxhub-api voxtral-vllm
+
+# Or just the vLLM server (if VoxHub runs elsewhere)
+docker compose --profile vllm up -d voxtral-vllm
+
+# Use it by requesting the *-vllm model key:
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F file=@audio/meeting.mp3 \
+  -F model=voxtral:mini-4b-vllm
+```
+
+If the vllm service isn't running when a `-vllm` model is requested, VoxHub
+fails fast with a message telling you which compose command to run.
+
+#### Attention backend (Flash Attention 2)
+
+The transformers-based `voxtral:*` backend now defaults to
+`attn_implementation="flash_attention_2"` on Ampere/Ada/Hopper CUDA GPUs
+(sm_80/86/89/90) — typically ~1.5-2x faster than SDPA on Voxtral. The
+defaults resolve as follows:
+
+- **Blackwell (sm_120/sm_121, GB10/B200 consumer)** → `eager`. SDPA's
+  sliding-window kernel still crashes with `cudaErrorNotPermitted` on
+  current torch builds, and upstream Dao-AILab/flash-attention does not
+  ship official wheels for sm_120+ (only community builds).
+- **CUDA (Ampere/Ada/Hopper)** → `flash_attention_2`, with a transparent
+  fallback to `eager` + a log hint if the `flash-attn` wheel is missing.
+- **ROCm / CPU** → `sdpa`.
+
+To install `flash-attn` in a CUDA image for the speedup:
+
+```bash
+pip install flash-attn --no-build-isolation
+```
+
+Or override the resolution explicitly in `models.yaml`:
+
+```yaml
+voxtral:mini-4b:
+  args:
+    attn_implementation: sdpa          # or "eager", "flash_attention_2"
+```
 
 ### Automatic Language Detection
 
@@ -243,6 +312,16 @@ python test_jobs.py audio/your_audio_file.mp3
 | `VOXHUB_API_KEY` | — | Optional API authentication |
 | `VOXHUB_DEVICE` | `auto` | Hardware: `auto`, `cuda`, `rocm`, `cpu` |
 | `HF_TOKEN` | — | Required for Pyannote/hybrid VAD and gated models |
+| `VOXTRAL_VLLM_URL` | `http://voxtral-vllm:8000/v1` | Base URL of the vLLM server (used by `voxtral:*-vllm` models) |
+| `VOXTRAL_VLLM_API_KEY` | `EMPTY` | API key passed to the vLLM server (only needed if vLLM was started with `--api-key`) |
+| `VOXTRAL_VLLM_TIMEOUT` | `120` | HTTP timeout in seconds for vLLM transcription calls |
+| `VOXTRAL_VLLM_RETRIES` | `3` | Number of retry attempts on transient vLLM errors |
+| `VOXTRAL_VLLM_MODEL_ID` | `mistralai/Voxtral-Mini-4B-Realtime-2602` | HF model id the `voxtral-vllm` container serves |
+| `VOXTRAL_VLLM_TP` | `1` | `--tensor-parallel-size` passed to vLLM |
+| `VOXTRAL_VLLM_MAX_LEN` | `45000` | `--max-model-len` passed to vLLM |
+| `VOXTRAL_VLLM_MAX_BATCH` | `8192` | `--max-num-batched-tokens` passed to vLLM |
+| `VOXTRAL_VLLM_MAX_SEQS` | `16` | `--max-num-seqs` passed to vLLM |
+| `VOXTRAL_VLLM_GPU_MEM` | `0.90` | `--gpu-memory-utilization` passed to vLLM |
 
 > **Tip — Language Detection**: Whisper models auto-detect the spoken language by default. If you're getting translated output (e.g., English text for French audio), set the `language` parameter explicitly in your request.
 
@@ -307,14 +386,16 @@ graph TD
 
     subgraph "ASR Registry"
         H3 --> J{Model Factory}
-        J -->|voxtral| K[VoxtralTranscriber]
+        J -->|voxtral:*| K[VoxtralTranscriber<br/>transformers, in-process]
+        J -->|voxtral:*-vllm| KV[VoxtralVLLMTranscriber<br/>HTTP client]
+        KV -.->|/v1/audio/transcriptions| KVS[(voxtral-vllm container<br/>vLLM server, holds weights)]
         J -->|whisper| L[WhisperTranscriber]
         J -->|moonshine| M[MoonshineTranscriber]
         J -->|canary| N[CanaryTranscriber]
     end
 
     subgraph "Output"
-        K & L & M & N --> O[Unified Format Engine]
+        K & KV & L & M & N --> O[Unified Format Engine]
         O --> P[JSON / MD / TXT / SRT / VTT]
         O -.-> Q[Benchmark Metrics]
     end
@@ -342,5 +423,11 @@ core/
 models.yaml           Model registry configuration
 server.py             FastAPI app factory + uvicorn entry point
 main.py               CLI entry point
-docker-compose.yaml   Docker services (Spark, ROCm, CPU, API)
+docker-compose.yaml   Docker services (Spark, ROCm, CPU, API, vLLM)
 ```
+
+### Voxtral backend files
+
+- `core/transcribe.py` — transformers-based `VoxtralTranscriber` (local, in-process)
+- `core/transcribe_voxtral_vllm.py` — `VoxtralVLLMTranscriber` (HTTP client to a remote vLLM server)
+- `docker-compose.yaml` → `voxtral-vllm` service (activated by `--profile vllm`)

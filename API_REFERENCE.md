@@ -458,8 +458,10 @@ Models follow the `family:variant` naming convention. Available models (from `mo
 | `whisper:large-v3` | Whisper (OpenAI) | Highest accuracy Whisper variant |
 | `whisper:small` | Whisper (OpenAI) | Lightweight, lower VRAM |
 | `whisper:medium` | Whisper (OpenAI) | Mid-range (disabled by default) |
-| `voxtral:mini-4b` | Voxtral (Mistral) | Real-time capable, strong French/English |
-| `voxtral:small-24b` | Voxtral (Mistral) | High quality, large model (disabled by default) |
+| `voxtral:mini-4b` | Voxtral (Mistral, transformers) | Real-time capable, strong French/English, in-process |
+| `voxtral:mini-4b-vllm` | Voxtral (Mistral, vLLM) | Same weights served by the `voxtral-vllm` container. Higher throughput; requires `docker compose --profile vllm up`. |
+| `voxtral:small-24b` | Voxtral (Mistral, transformers) | High quality, large model (disabled by default) |
+| `voxtral:small-24b-vllm` | Voxtral (Mistral, vLLM) | High-quality model served remotely via vLLM (disabled by default) |
 | `moonshine:base` | Moonshine (UsefulSensors) | Ultra-low latency, **English only** |
 | `moonshine:tiny` | Moonshine (UsefulSensors) | Minimal footprint (disabled by default) |
 | `canary:1b` | Canary (NVIDIA NeMo) | SOTA accuracy, multi-task |
