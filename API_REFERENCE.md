@@ -520,9 +520,4 @@ All errors return JSON:
 
 | Status | Meaning |
 |:-------|:--------|
-| `400` | Job not yet completed (when fetching result) |
-| `401` | Missing API key (when `VOXHUB_API_KEY` is configured) |
-| `403` | Invalid API key |
-| `404` | Job not found (or already purged), or model not loaded (for unload) |
-| `409` | Conflict: job cannot be cancelled (already terminal) or deleted (still running) |
-| `500` | Transcription or internal server error |
+| `400` | Job not yet 

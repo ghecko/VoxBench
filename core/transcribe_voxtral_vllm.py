@@ -311,15 +311,11 @@ class VoxtralVLLMTranscriber(BaseTranscriber):
                 return ""
             if not (stripped.startswith("{") or stripped.startswith("[")):
                 return stripped
-
-            # Walk potentially-concatenated JSON values like
-            #   {"text":"a"}  {"text":"b"}  {"text":"c"}
             decoder = json.JSONDecoder()
             texts: List[str] = []
             idx = 0
             n = len(stripped)
             while idx < n:
-                # Skip whitespace between JSON values
                 while idx < n and stripped[idx].isspace():
                     idx += 1
                 if idx >= n:
@@ -327,7 +323,6 @@ class VoxtralVLLMTranscriber(BaseTranscriber):
                 try:
                     obj, end = decoder.raw_decode(stripped, idx)
                 except json.JSONDecodeError:
-                    # Unparseable tail — give up, return what we have or the raw
                     return " ".join(texts).strip() if texts else stripped
                 idx = end
                 if isinstance(obj, dict):
@@ -340,7 +335,6 @@ class VoxtralVLLMTranscriber(BaseTranscriber):
                             t = item.get("text")
                             if isinstance(t, str) and t:
                                 texts.append(t)
-
             return " ".join(texts).strip() if texts else stripped
 
         return ""

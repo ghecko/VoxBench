@@ -117,21 +117,4 @@ moonshine:tiny:
   module: core.transcribe_moonshine
   class: MoonshineTranscriber
   args:
-    model_name: UsefulSensors/moonshine-tiny-ar
-  enabled: false
-
-# ── Canary (NVIDIA NeMo) ──────────────────────────────────────
-canary:1b:
-  module: core.transcribe_canary
-  class: CanaryTranscriber
-  args:
-    model_name: nvidia/canary-1b
-  enabled: true
-
-# ── Add your own models below ─────────────────────────────────
-# example:custom-model:
-#   module: core.transcribe_whisper
-#   class: WhisperTranscriber
-#   args:
-#     model_size: large-v3
-#   enabled: true
+    model_name

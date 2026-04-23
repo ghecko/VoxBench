@@ -210,12 +210,4 @@ networks:
   # http://voxhub-api:8000 over a closed bridge — never via Caddy / LAN.
   #
   # The network must already exist when VoxHub starts. The OpenHiNotes
-  # compose stack creates it (declared without `external:` on its side); if
-  # OpenHiNotes is not running, create it manually:
-  #     docker network create hinotes-internal
-  #
-  # See README ("Cross-project networking") for the matching OpenHiNotes
-  # backend-side YAML block.
-  hinotes-internal:
-    external: true
-    name: hinotes-internal
+  # compose stack c

@@ -461,22 +461,4 @@ api/                  FastAPI server, routers, formatters
   transcriber.py      Async transcription service with job management
 core/
   vad.py              Unified VAD orchestrator (Silero, Pyannote, Hybrid)
-  segments.py         Segment post-processor (sanitizer + wav2vec2 boundary refiner)
-  diarize.py          Pyannote speaker diarization
-  registry.py         Model factory and YAML-based registry
-  transcribe*.py      Engine-specific ASR backends
-  audio.py            Audio loading (FFmpeg + soundfile)
-  cache.py            Persistent VAD segment caching
-  benchmark.py        Performance analytics engine
-  format.py           Output formatters (JSON, MD, TXT, SRT)
-models.yaml           Model registry configuration
-server.py             FastAPI app factory + uvicorn entry point
-main.py               CLI entry point
-docker-compose.yaml   Docker services (Spark, ROCm, CPU, API, vLLM)
-```
-
-### Voxtral backend files
-
-- `core/transcribe.py` — transformers-based `VoxtralTranscriber` (local, in-process)
-- `core/transcribe_voxtral_vllm.py` — `VoxtralVLLMTranscriber` (HTTP client to a remote vLLM server)
-- `docker-compose.yaml` → `voxtral-vllm` service (activated by `--profile vllm`)
+  segments.py         Segment post-processor (sanitizer + wav2vec2 bounda
