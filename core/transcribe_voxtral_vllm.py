@@ -36,6 +36,7 @@ import logging
 import os
 import time
 import wave
+from collections import Counter
 from typing import List, Optional
 
 import numpy as np
@@ -51,6 +52,57 @@ _DEFAULT_BASE_URL = os.environ.get(
 )
 _DEFAULT_TIMEOUT = float(os.environ.get("VOXTRAL_VLLM_TIMEOUT", "120"))
 _DEFAULT_RETRIES = int(os.environ.get("VOXTRAL_VLLM_RETRIES", "3"))
+
+# Per-segment generation budget. Voxtral on a clean speech segment generates
+# roughly 5–12 tokens per second of audio (the spread covers languages with
+# different token-per-syllable ratios + occasional code-switch). We cap at
+# ~15 tok/s so a normal segment is unaffected, but a hallucinating segment
+# (model stuck in a repetition loop on noise/silence/music) hits the ceiling
+# in seconds instead of running until vLLM's own default limit (~5k tokens,
+# ~2 minutes at 48 tok/s). Tunable via env for unusual deployments.
+_TOKENS_PER_SECOND_BUDGET = float(
+    os.environ.get("VOXTRAL_VLLM_TOKENS_PER_SECOND", "15")
+)
+_MIN_MAX_TOKENS = int(os.environ.get("VOXTRAL_VLLM_MIN_MAX_TOKENS", "64"))
+
+# Repetition guard. Voxtral's failure mode on noisy chunks is to loop on a
+# short n-gram ("merci. merci. merci…", "you. you. you…"). When the most
+# common 3-gram dominates the output above this fraction, we treat the
+# segment as garbage and drop it.
+_REPETITION_NGRAM = int(os.environ.get("VOXTRAL_VLLM_REPETITION_NGRAM", "3"))
+_REPETITION_THRESHOLD = float(
+    os.environ.get("VOXTRAL_VLLM_REPETITION_THRESHOLD", "0.35")
+)
+_REPETITION_MIN_TOKENS = int(
+    os.environ.get("VOXTRAL_VLLM_REPETITION_MIN_TOKENS", "12")
+)
+
+
+def _looks_repetitive(
+    text: str,
+    ngram: int = _REPETITION_NGRAM,
+    threshold: float = _REPETITION_THRESHOLD,
+    min_tokens: int = _REPETITION_MIN_TOKENS,
+) -> bool:
+    """Return True when *text* looks like a Voxtral repetition-loop artefact.
+
+    We tokenise on whitespace (cheap, language-agnostic enough for the
+    failure modes we see in practice) and check whether the most common
+    n-gram exceeds *threshold* of all n-grams. Short outputs are exempt:
+    a 4-word "Merci beaucoup, à bientôt." would otherwise trip the check.
+    """
+    if not text:
+        return False
+    tokens = text.split()
+    if len(tokens) < max(min_tokens, ngram * 4):
+        return False
+    grams = [
+        " ".join(tokens[i : i + ngram]) for i in range(len(tokens) - ngram + 1)
+    ]
+    if not grams:
+        return False
+    _, count = Counter(grams).most_common(1)[0]
+    return (count / len(grams)) > threshold
 
 
 def _ndarray_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
@@ -215,10 +267,21 @@ class VoxtralVLLMTranscriber(BaseTranscriber):
         # The "json" path lets the SDK parse into a TranscriptionResponse
         # and _extract_text() below handles both the clean and the
         # degenerate (concatenated-SSE) shapes defensively.
+        # Per-segment max-tokens cap. The OpenAI SDK's
+        # ``audio.transcriptions.create`` does not expose ``max_tokens`` in
+        # its typed kwargs, so we tunnel it through ``extra_body`` — vLLM's
+        # OpenAI-compatible handler accepts it for transcription requests.
+        # See module-level _TOKENS_PER_SECOND_BUDGET for the rationale.
+        duration_s = len(audio) / self.sample_rate
+        max_tokens = max(
+            _MIN_MAX_TOKENS, int(duration_s * _TOKENS_PER_SECOND_BUDGET)
+        )
+
         kwargs = {
             "file": file_tuple,
             "model": self.model_id,
             "response_format": "json",
+            "extra_body": {"max_tokens": max_tokens},
         }
         # Only forward the language hint when we actually have one;
         # passing language="" or "auto" confuses some vLLM builds.
@@ -230,7 +293,24 @@ class VoxtralVLLMTranscriber(BaseTranscriber):
             kwargs["prompt"] = " ".join(context.split()[-30:])
 
         text = self._post_with_retries(kwargs)
-        return text.strip()
+        text = text.strip()
+
+        # Repetition guard. If Voxtral got stuck in a loop on this chunk,
+        # the output is dominated by one repeated n-gram ("you. you. you…").
+        # We drop it: api/transcriber.py treats an empty string as "skip
+        # this segment" via its `if not text or not text.strip(): continue`
+        # check, so the file as a whole still completes.
+        if _looks_repetitive(text):
+            logger.warning(
+                "Voxtral output for a %.1fs segment looks repetitive (max_tokens=%d); "
+                "dropping. Snippet: %r",
+                duration_s,
+                max_tokens,
+                text[:120],
+            )
+            return ""
+
+        return text
 
     def transcribe_batch(self, audio_segments: List[np.ndarray]) -> List[str]:
         """Sequential for now — vLLM will still batch internally across
